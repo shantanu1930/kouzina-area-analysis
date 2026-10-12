@@ -2936,6 +2936,7 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
     if (n >= 1e5) return (n / 1e5).toFixed(1).replace(/\.0$/, "") + " lakh";
     return fmt(n);
   }
+  const popText = n => n >= 1e5 ? lakh(n) : fmt(n >= 1000 ? Math.round(n / 100) * 100 : n);
 
   function build(JsPDF, data) {
     const { a, d, O, BR } = data;
@@ -3033,12 +3034,11 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
 
     // ---------- Snapshot tiles ----------
     const t = d.tot, s = d.sub;
-    const city = a.census[0] && a.census[0].km <= Math.max(12, a.radiusKm) ? a.census[0] : null;
     const pins = new Set(a.localities.filter(l => l.pin && !l.pinApprox).map(l => l.pin)).size;
     const nOsm = a.localities.filter(l => l.src === "osm").length;
     const tiles = [
       ["Localities", fmt(a.localities.length), pins + " PIN codes" + (nOsm ? " · " + nOsm + " from the map" : " · India Post")],
-      ["City population", city ? lakh(city.pop) : "-", city ? city.name + " · Census 2011" : "No city of 1 lakh+ nearby"],
+      ["Population in this area", a.pop && !a.pop.na ? popText(a.pop.total) : "-", a.pop && !a.pop.na ? "est. " + a.pop.year + " · WorldPop" : "data unavailable"],
       ["Food outlets", fmt(t.food), [s.restaurant ? fmt(s.restaurant) + " restaurants" : "", s.fast_food ? fmt(s.fast_food) + " fast food" : "", s.cafe ? fmt(s.cafe) + " cafes" : ""].filter(Boolean).join(" · ")],
       ["Similar setups & chains", fmt(t.chain), d.chainList.length + " names"],
       ["Colleges & coaching", fmt(t.college), [s.university ? s.university + " universities" : "", s.college ? s.college + " colleges" : "", s.coaching ? s.coaching + " coaching" : ""].filter(Boolean).join(" · ")],
@@ -3249,6 +3249,7 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
     // ---------- Population ----------
     ensure(50);
     heading("Population and nearby towns");
+    if (a.pop && !a.pop.na) para("Within " + a.radiusKm + " km: about " + popText(a.pop.total) + " people (WorldPop " + a.pop.year + " estimate, 100 m grid).", L, CW, 8.4, "bold", C.ink2, 3);
     if (a.census.length) {
       table([{ k: "City (Census 2011, 1 lakh+)", w: 80 }, { k: "Population", w: 50, align: "right" }, { k: "From centre", w: CW - 130, align: "right" }],
         a.census.map(c => [c.name, fmt(c.pop) + " (" + lakh(c.pop) + ")", c.km + " km " + c.dir]), { size: 7.6 });
@@ -3263,7 +3264,7 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
     heading("About this data");
     para("What the numbers are: counts of places mapped on OpenStreetMap within " + a.radiusKm + " km of the centre" + (a.osm.timestamp ? " (map data as of " + new Date(a.osm.timestamp).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) + ")" : "") + ". They describe the area; they are not a score or a ranking, and there are no revenue or order figures. Mapping is more complete in big cities than in small towns, so read low counts as \"at least this many\".", L, CW, 8.4, "normal", C.ink2, 2);
     para("Localities: India Post post offices with a recorded position, plus neighbourhoods named on OpenStreetMap where post offices are sparse, lettered from the centre outwards. Each mapped place is counted in its nearest locality.", L, CW, 8.4, "normal", C.ink2, 2);
-    para("Sources: India Post All India Pincode Directory (Department of Posts, via data.gov.in; Government Open Data License - India" + (a.gzVersion ? ", version " + a.gzVersion : "") + "). Places: (c) OpenStreetMap contributors, Open Database License, openstreetmap.org/copyright, via the Overpass API" + (a.osm.server ? " (" + a.osm.server + ")" : "") + ". Populations: " + (data.census && data.census.source ? data.census.source : "Census of India 2011") + ".", L, CW, 8.4, "normal", C.ink2, 2);
+    para("Sources: India Post All India Pincode Directory (Department of Posts, via data.gov.in; Government Open Data License - India" + (a.gzVersion ? ", version " + a.gzVersion : "") + "). Places: (c) OpenStreetMap contributors, Open Database License, openstreetmap.org/copyright, via the Overpass API" + (a.osm.server ? " (" + a.osm.server + ")" : "") + ". Population in this area: WorldPop 2025 estimate, 100 m grid (Global2 R2025A, www.worldpop.org, CC BY 4.0), summed over the circle. City populations: " + (data.census && data.census.source ? data.census.source : "Census of India 2011") + ".", L, CW, 8.4, "normal", C.ink2, 2);
 
     // ---------- Footers ----------
     const n = doc.getNumberOfPages();
@@ -3287,7 +3288,7 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
 </script>
 <script>
 /* Kouzina Area Analysis — free edition. No AI, no sign-in, no keys.
-   India Post localities (built in) + OpenStreetMap places (live, Overpass API) + Census 2011 city populations (built in).
+   India Post localities (built in) + OpenStreetMap places (live, Overpass API) + WorldPop 2025 area population (pop/ tiles) + Census 2011 city populations (built in).
    Area details only: no rankings, recommendations, revenue or order figures. */
 (function () {
   "use strict";
@@ -3315,6 +3316,14 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
     if (n >= 1e5) return (n / 1e5).toFixed(1).replace(/\.0$/, "") + " lakh";
     return fmt(n);
   }
+  // people in the circle, rounded: "2.5 lakh", "38,200"
+  const popText = n => n >= 1e5 ? lakh(n) : fmt(n >= 1000 ? Math.round(n / 100) * 100 : n);
+  function popTile(a, city) {
+    const p = a.pop, cityBit = city ? `${city.name} city ${lakh(city.pop)} (2011)` : "";
+    if (!p) return ["Population in this area", "…", "loading estimate"];
+    if (p.na) return ["Population in this area", "—", ["population data unavailable", cityBit].filter(Boolean).join(" · ")];
+    return ["Population in this area", popText(p.total), [`est. ${p.year} · WorldPop`, cityBit].filter(Boolean).join(" · ")];
+  }
   const code = i => { const L = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"; return i < 26 ? L[i] : L[Math.floor(i / 26) - 1] + L[i % 26]; };
   const plural = (n, one, many) => fmt(n) + " " + (n === 1 ? one : (many || one + "s"));
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -3340,6 +3349,57 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
       async del(k) { mem.delete(k); try { await tx("readwrite", s => s.delete(k)); } catch (_) { /* ignore */ } },
       async keys() { try { return (await tx("readonly", s => s.getAllKeys())) || []; } catch (_) { return [...mem.keys()]; } }
     };
+  })();
+
+  // ---------- people living in the circle: WorldPop 2025 estimate, cut into 1° tiles in pop/ (see pop/index.json) ----------
+  const Pop = (() => {
+    let idxP = null; const tiles = new Map();
+    const index = () => idxP || (idxP = fetch("pop/index.json").then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .catch(e => { idxP = null; throw e; }));
+    function tile(name) {
+      if (!tiles.has(name)) tiles.set(name, fetch("pop/" + name + ".bin.gz").then(async r => {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        let buf = new Uint8Array(await r.arrayBuffer());
+        // still gzipped unless the server already unpacked it (Content-Encoding)
+        if (buf[0] === 0x1f && buf[1] === 0x8b) buf = new Uint8Array(await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
+        const n = buf.length / 2, out = new Uint16Array(n);
+        for (let i = 0; i < n; i++) out[i] = buf[i] | (buf[n + i] << 8);
+        return out;
+      }).catch(e => { tiles.delete(name); throw e; }));
+      return tiles.get(name);
+    }
+    // Sum of people in cells inside the circle; cells on the edge count by the share of a 4×4 grid of points inside
+    async function inCircle(lat, lon, rKm) {
+      const idx = await index();
+      const have = new Set(idx.tiles), cell = idx.cell, n = idx.n, SUB = 4;
+      const kmLat = 111.195, kmLon = kmLat * Math.cos(lat * Math.PI / 180);
+      const dLat = rKm / kmLat, dLon = rKm / kmLon, half = Math.hypot(cell * kmLat, cell * kmLon) / 2;
+      const list = [];
+      for (let la = Math.floor(lat - dLat); la <= Math.floor(lat + dLat); la++)
+        for (let lo = Math.floor(lon - dLon); lo <= Math.floor(lon + dLon); lo++) if (have.has(la + "_" + lo)) list.push([la, lo]);
+      const data = await Promise.all(list.map(([la, lo]) => tile(la + "_" + lo)));
+      let total = 0;
+      list.forEach(([la, lo], k) => {
+        const t = data[k];
+        const j0 = Math.max(0, Math.floor((lat - dLat - la) / cell)), j1 = Math.min(n - 1, Math.floor((lat + dLat - la) / cell));
+        const i0 = Math.max(0, Math.floor((lon - dLon - lo) / cell)), i1 = Math.min(n - 1, Math.floor((lon + dLon - lo) / cell));
+        for (let j = j0; j <= j1; j++) {
+          const y0 = (la + j * cell - lat) * kmLat;
+          for (let i = i0; i <= i1; i++) {
+            const v = t[j * n + i]; if (!v) continue;
+            const x0 = (lo + i * cell - lon) * kmLon, d = Math.hypot(x0 + cell * kmLon / 2, y0 + cell * kmLat / 2);
+            if (d - half > rKm) continue;
+            if (d + half <= rKm) { total += v; continue; }
+            let inside = 0;
+            for (let a = 0; a < SUB; a++) for (let b = 0; b < SUB; b++)
+              if (Math.hypot(x0 + (b + 0.5) / SUB * cell * kmLon, y0 + (a + 0.5) / SUB * cell * kmLat) <= rKm) inside++;
+            total += v * inside / (SUB * SUB);
+          }
+        }
+      });
+      return { total: Math.round(total), year: idx.year, source: idx.source };
+    }
+    return { inCircle };
   })();
 
   // ---------- state ----------
@@ -3477,7 +3537,7 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
         <div class="module-note">${focusLabels.length ? `<strong>${esc(mod.name)}</strong> · ${esc(focusLabels.join(", "))}` : "All food categories shown equally."}</div>
       </div>
       <button class="btn primary block" type="button" data-act="run" id="runBtn" ${busy ? "disabled" : ""}>${busy ? "Working…" : "Show area details"}</button>
-      <p class="fineprint">Uses free public data: India Post localities, OpenStreetMap and Census 2011. No sign-in or keys. Area details only — no rankings, revenue or order figures.</p>`;
+      <p class="fineprint">Uses free public data: India Post localities, OpenStreetMap, WorldPop population estimates and Census 2011. No sign-in or keys. Area details only — no rankings, revenue or order figures.</p>`;
     const input = $("#where");
     input.addEventListener("input", onWhereInput);
     input.addEventListener("keydown", onWhereKey);
@@ -3632,6 +3692,7 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
     try {
       if (place.needsLocate) { place = await locate(place, ctl.signal); if (!current()) return; S.run.stage = "osm"; S.run.place = place; renderMain(); }
       const a = newAnalysis(place, radiusKm, moduleId);
+      const popP = Pop.inCircle(place.lat, place.lon, radiusKm).catch(() => null);
       S.run.localities = a.localities.length; renderRunSteps();
       try {
         const key = cacheKey(place.lat, place.lon, radiusKm);
@@ -3660,6 +3721,8 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
         a.osm = { ok: false, error: (e && e.details) ? e.details.join("; ") : String(e && e.message || e), places: [], roads: [], settlements: [],
           reason: FILE_MODE && e && e.refused ? "file" : e && e.refused ? "refused" : "busy" };
       }
+      if (!current()) return;
+      a.pop = (await Promise.race([popP, new Promise(r => setTimeout(r, 8000))])) || { na: true };
       if (!current()) return;
       assignLocalities(a);
       S.run = null;
@@ -3864,6 +3927,12 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
     if (opts && opts.save) saveRecent(a);
     writeHash(a);
     scrollToMain();
+    // analyses saved before area population existed (or whose figure did not load): fetch it now
+    if (!a.pop || a.pop.na) Pop.inCircle(a.place.lat, a.place.lon, a.radiusKm).catch(() => null).then(r => {
+      if (S.a !== a || (!r && a.pop)) return;
+      a.pop = r || { na: true };
+      const el = $("section.tiles"); if (el) el.innerHTML = tilesHtml(a, S.d);
+    });
   }
   // on phones the results sit below the form: bring them into view
   function scrollToMain() {
@@ -3972,7 +4041,7 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
           <li><strong>Choose the radius.</strong> 3 km suits one locality; 8–12 km covers a whole city.</li>
           <li><strong>Read the details.</strong> Download the PDF or share the link with your team.</li>
         </ol>
-        <p class="fineprint">Free public data, fetched live: India Post All India Pincode Directory, OpenStreetMap, Census of India 2011. Counts show what is mapped; they describe the area and do not rank it. No revenue or order figures.</p>
+        <p class="fineprint">Free public data, fetched live: India Post All India Pincode Directory, OpenStreetMap, WorldPop 2025 population estimates, Census of India 2011. Counts show what is mapped; they describe the area and do not rank it. No revenue or order figures.</p>
       </div>
     </section>`;
   }
@@ -4055,7 +4124,7 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
     const nOsm = a.localities.filter(l => l.src === "osm").length;
     const tiles = [
       ["Localities", `${fmt(a.localities.length)}`, `${plural(pins, "PIN code")}${nOsm ? " · " + fmt(a.localities.length - nOsm) + " India Post + " + fmt(nOsm) + " mapped" : " · India Post"}`],
-      ["City population", city ? lakh(city.pop) : "—", city ? `${city.name} · Census 2011` : "No city of 1 lakh+ nearby"],
+      popTile(a, city),
       ["Food outlets", fmt(t.food), [s.restaurant ? fmt(s.restaurant) + " restaurants" : "", s.fast_food ? fmt(s.fast_food) + " fast food" : "", s.cafe ? fmt(s.cafe) + " cafés" : ""].filter(Boolean).join(" · ") || "mapped on OpenStreetMap"],
       ["Similar setups & chains", fmt(t.chain), d.chainList.length ? plural(d.chainList.length, "name") + " · " + d.chainList.slice(0, 2).map(c => c.name).join(", ") : "none mapped"],
       ["Colleges & coaching", fmt(t.college), [s.university ? plural(s.university, "university", "universities") : "", s.college ? plural(s.college, "college") : "", s.coaching ? fmt(s.coaching) + " coaching" : ""].filter(Boolean).join(" · ") || "none mapped"],
@@ -4330,6 +4399,7 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
     return `<div class="hd"><h2 id="popTitle">Population and nearby towns</h2></div>
       <div class="bd two-up">
         <div>
+          ${a.pop && !a.pop.na ? `<p class="small" style="margin-top:0"><strong>Within ${esc(a.radiusKm)} km:</strong> about ${esc(popText(a.pop.total))} people (WorldPop ${esc(a.pop.year)} estimate, 100 m grid).</p>` : ""}
           <div class="subhead" style="margin-top:0">Cities of 1 lakh+ nearby · Census 2011</div>
           ${a.census.length ? `<table class="simtable"><thead><tr><th scope="col">City</th><th scope="col">Population</th><th scope="col">From centre</th></tr></thead>
             <tbody>${a.census.map(c => `<tr><th scope="row">${esc(c.name)}</th><td class="mono">${fmt(c.pop)} <span class="muted">(${esc(lakh(c.pop))})</span></td><td class="mono">${esc(c.km)} km ${esc(c.dir)}</td></tr>`).join("")}</tbody></table>`
@@ -4352,7 +4422,7 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
         <p><strong>What the numbers are.</strong> Counts of places mapped on OpenStreetMap within ${esc(a.radiusKm)} km of the centre${a.osm.timestamp ? " (map data as of " + esc(fmtDate(a.osm.timestamp)) + ")" : ""}. They describe the area; they are not a score or a ranking, and there are no revenue or order figures. Mapping is more complete in big cities than in small towns, so treat low counts as “at least this many”.</p>
         <p><strong>Localities.</strong> India Post post offices with a recorded position, plus neighbourhoods named on OpenStreetMap where post offices are sparse, lettered from the centre outwards. Each mapped place is counted in its nearest locality.</p>
         <p><strong>Similar kitchen setups.</strong> Outlets matched to known delivery-first brands, cloud kitchens and food chains by their mapped name or brand, plus names that repeat 3+ times in the area. Kouzina's own brands are excluded.</p>
-        <p><strong>Sources.</strong> Localities and PIN codes: India Post All India Pincode Directory (Department of Posts, via data.gov.in, Government Open Data License – India${a.gzVersion ? ", version " + esc(a.gzVersion) : ""}). Places: © OpenStreetMap contributors, Open Database License (openstreetmap.org/copyright), fetched through the Overpass API${a.osm.server ? " (" + esc(a.osm.server) + ")" : ""}. Populations: ${esc(CENSUS.source || "Census of India 2011")}; town populations as tagged on OpenStreetMap. Centre: ${esc(locatedText(a))}.</p>
+        <p><strong>Sources.</strong> Localities and PIN codes: India Post All India Pincode Directory (Department of Posts, via data.gov.in, Government Open Data License – India${a.gzVersion ? ", version " + esc(a.gzVersion) : ""}). Places: © OpenStreetMap contributors, Open Database License (openstreetmap.org/copyright), fetched through the Overpass API${a.osm.server ? " (" + esc(a.osm.server) + ")" : ""}. Population in this area: WorldPop 2025 estimate, 100 m grid (Global2 R2025A, www.worldpop.org, CC BY 4.0), summed over the circle. City populations: ${esc(CENSUS.source || "Census of India 2011")}; town populations as tagged on OpenStreetMap. Centre: ${esc(locatedText(a))}.</p>
       </div>`;
   }
 
@@ -4363,7 +4433,8 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
     const L = [];
     L.push(`Area details: ${a.place.short}${a.place.district ? ", " + a.place.district : ""}${a.place.state ? ", " + a.place.state : ""} — ${a.radiusKm} km radius`);
     L.push(`Centre ${a.place.lat.toFixed(5)}, ${a.place.lon.toFixed(5)} · ${E.mapsLink(a.place.lat, a.place.lon)}`);
-    if (city) L.push(`Population: ${city.name} ${fmt(city.pop)} (Census 2011)`);
+    if (a.pop && !a.pop.na) L.push(`Population in this area: about ${popText(a.pop.total)} (WorldPop ${a.pop.year} estimate, ${a.radiusKm} km radius)${city ? ` · ${city.name} city ${fmt(city.pop)} (Census 2011)` : ""}`);
+    else if (city) L.push(`Population: ${city.name} ${fmt(city.pop)} (Census 2011)`);
     L.push(`Localities: ${a.localities.length} (PIN codes ${[...new Set(a.localities.filter(l => l.pin && !l.pinApprox).map(l => l.pin))].slice(0, 14).join(", ")})`);
     if (a.osm.ok) {
       L.push(`Mapped on OpenStreetMap: ${fmt(d.tot.food)} food outlets (${fmt(s.restaurant || 0)} restaurants, ${fmt(s.fast_food || 0)} fast food, ${fmt(s.cafe || 0)} cafés, ${fmt((s.bakery || 0) + (s.sweets || 0))} bakeries & sweet shops), ${fmt(d.tot.college)} colleges & coaching, ${fmt(d.tot.school)} schools, ${fmt(d.tot.health)} hospitals & clinics, ${fmt(d.tot.work)} offices & business places, ${fmt(d.tot.retail)} malls & supermarkets, ${fmt(d.tot.stay)} hostels, PGs & hotels, ${fmt(d.tot.transit)} stations`);
