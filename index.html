@@ -2850,11 +2850,12 @@ out center qt;`;
   async function geocode(q, opts) {
     opts = opts || {};
     const out = [];
-    const push = (name, parts, la, lo, kind) => {
+    const push = (name, parts, la, lo, kind, postcode) => {
       if (!inIndia(la, lo) || !name) return;
       const sub = parts.filter(Boolean).filter((x, i, arr) => arr.indexOf(x) === i && x !== name).join(", ");
       if (out.some(o => o.title === name && Math.abs(o.lat - la) < 0.01 && Math.abs(o.lon - lo) < 0.01)) return;
-      out.push({ title: name, sub, lat: la, lon: lo, kind: kind || "" });
+      const pc = String(postcode || "").replace(/\s+/g, "");
+      out.push({ title: name, sub, lat: la, lon: lo, kind: kind || "", postcode: /^\d{6}$/.test(pc) ? pc : "" });
     };
     try {
       const p = new URLSearchParams({ q, limit: "8", lang: "en", bbox: "68.0,6.0,97.6,37.6" });
@@ -2863,7 +2864,7 @@ out center qt;`;
       for (const f of (j && j.features) || []) {
         const pr = f.properties || {}; const c = (f.geometry && f.geometry.coordinates) || [];
         if (pr.countrycode && pr.countrycode !== "IN") continue;
-        push(pr.name || [pr.street, pr.housenumber].filter(Boolean).join(" "), [pr.district || pr.locality, pr.city || pr.county, pr.state, pr.postcode ? "PIN " + pr.postcode : ""], c[1], c[0], pr.osm_value);
+        push(pr.name || [pr.street, pr.housenumber].filter(Boolean).join(" "), [pr.district || pr.locality, pr.city || pr.county, pr.state, pr.postcode ? "PIN " + pr.postcode : ""], c[1], c[0], pr.osm_value, pr.postcode);
       }
       if (out.length) return { results: out, source: "Photon (OpenStreetMap)" };
     } catch (e) { if (opts.signal && opts.signal.aborted) throw abortErr(); }
@@ -2872,7 +2873,7 @@ out center qt;`;
       const j = await fetchJson("https://nominatim.openstreetmap.org/search?" + p.toString(), 12000, opts.signal);
       for (const r of j || []) {
         const ad = r.address || {};
-        push(r.name || String(r.display_name || "").split(",")[0], [ad.suburb || ad.neighbourhood, ad.city || ad.town || ad.county, ad.state, ad.postcode ? "PIN " + ad.postcode : ""], +r.lat, +r.lon, r.type);
+        push(r.name || String(r.display_name || "").split(",")[0], [ad.suburb || ad.neighbourhood, ad.city || ad.town || ad.county, ad.state, ad.postcode ? "PIN " + ad.postcode : ""], +r.lat, +r.lon, r.type, ad.postcode);
       }
       return { results: out, source: "Nominatim (OpenStreetMap)" };
     } catch (e) {
@@ -3168,7 +3169,7 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
     y += 2;
     if (a.localities.length > rowsMax) para(`${a.localities.length - rowsMax} more localities further out are in the on-screen table.`, L, CW, 7.6, "normal", C.muted, 1);
     para("Food = food outlets. " + (d.focusMask ? `${d.mod.short} = food outlets in ${d.mod.short}'s categories. ` : "") + "Chains = similar kitchen setups and food chains. Colleges = colleges, universities and coaching. Health = hospitals and clinics. Offices = offices and business places. Retail = malls and supermarkets. Stay = hostels, PGs and hotels. Stations = metro, rail and bus stations.", L, CW, 7.6, "normal", C.muted, 2);
-    if (a.unplaced.length) para("Also in these PIN codes (position not recorded): " + a.unplaced.map(u => u.name + " (" + u.pin + ")").join(", "), L, CW, 7.6, "normal", C.muted, 4);
+    if (a.unplaced.length) para("Also in these PIN codes (no reliable position on record): " + a.unplaced.map(u => u.name + " (" + u.pin + ")").join(", "), L, CW, 7.6, "normal", C.muted, 4);
 
     // ---------- Food ----------
     ensure(80);
@@ -3479,6 +3480,7 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
       S.gz = E.decodeGazetteer(JSON.parse(text));
       S.gzStatus = "ready";
       window.__KZ_LOCALITIES_B64 = null;
+      setTimeout(() => { try { pinOffices(0); pinArea(0); } catch (_) { /* built on first use instead */ } }, 30);   // indexes for the position checks
     } catch (err) {
       console.warn("Locality data unavailable", err);
       S.gzStatus = "error";
@@ -3496,6 +3498,13 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
   // ---------- form ----------
   function defaultRadius(place) {
     if (!place) return 3;
+    // India Post's point for this office looks wrong, so its surroundings say nothing: a locality gets 3 km,
+    // a head office is sized from where the other offices with its PIN are
+    if (S.gz && place.gi != null && looksMisplaced(place.gi)) {
+      if (S.gz.type[place.gi] !== 0) return 3;
+      const h = pinHome(S.gz.pin[place.gi], place.gi);
+      if (h != null) place = Object.assign({}, place, { lat: S.gz.lat[h], lon: S.gz.lon[h] });
+    }
     if (place.scope === "area" || place.kind === "pin" || place.kind === "geo") return 3;
     if (place.scope === "region") return 12;
     if (!S.gz || !Number.isFinite(place.lat)) return 5;
@@ -3561,6 +3570,8 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
         short: near ? "Near " + S.gz.names[near.i] : "Pinned spot", district: d ? d.name : "", state: d ? d.state : "" }];
     } else {
       S.sugg = q ? E.suggest(S.gz, q, 8) : [];
+      // a typed PIN code is centred on its offices, leaving out any whose India Post position looks wrong
+      S.sugg = S.sugg.map(s => { if (s.kind !== "pin" || !s.pinCode) return s; const c = pinCentre(s.pinCode); return c ? Object.assign({}, s, c) : s; });
       S.sugg = S.sugg.map(s => s.kind === "text" ? Object.assign({}, s, { title: "Search the map for “" + q + "”", sub: "Finds shops, buildings, tech parks and streets on OpenStreetMap" })
         : s.kind === "district" ? Object.assign({}, s, { sub: "District · around its main town · " + s.state }) : s);
       if (!S.gz && q.length >= 3) S.sugg = [{ kind: "text", title: "Search the map for “" + q + "”", sub: "Finds the place on OpenStreetMap", query: q }];
@@ -3596,7 +3607,17 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
     else if (s.kind === "pin" && !s.pinCode) place = { kind: "pin", label: s.short + " (" + s.title + ")", short: s.short, lat: s.lat, lon: s.lon, district: s.district, state: s.state, scope: "area" };
     else place = E.resolvePlace(S.gz, s);
     if (!place) return;
-    if (place.kind === "pin" && s.pinCode) { place.short = s.title.replace(/^PIN \d+ · /, ""); place.pinCode = s.pinCode; }
+    // India Post row, checked against OpenStreetMap at run time (offices without their own position are searched on the map anyway)
+    if ((place.kind === "office" || place.kind === "city") && s.i != null && !place.needsLocate) place.gi = s.i;
+    if (place.kind === "pin" && s.pinCode) {
+      place.short = s.title.replace(/^PIN \d+ · /, ""); place.pinCode = s.pinCode;
+      // every India Post position for this PIN looks wrong: find it on the map instead, around its 3-digit PIN group
+      if (s.lost) {
+        const ar = pinArea(s.pinCode), group = String(s.pinCode).slice(0, 3);
+        Object.assign(place, { needsLocate: true, hint: ar ? { lat: ar.lat, lon: ar.lon } : null, hintLocated: "PIN " + group + "xxx",
+          hintNote: `India Post's positions for PIN ${s.pinCode} look wrong and the map search did not find ${place.short}, so the map is centred on the middle of the ${group}xxx PIN area. Drag the pin on the map to the right spot and run again.` });
+      }
+    }
     setPlace(place, s.kind === "text" ? s.query : (s.kind === "pin" ? s.title : (place.short || s.title)));
   }
   function setPlace(place, query) {
@@ -3656,9 +3677,153 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
       const ok = results.find(r => !place.hint || E.km(r.lat, r.lon, place.hint.lat, place.hint.lon) <= 80);
       if (ok) return Object.assign({}, place, { lat: ok.lat, lon: ok.lon, needsLocate: false, located: source });
     } catch (e) { if (e && e.name === "AbortError") throw e; }
-    if (place.hint) return Object.assign({}, place, { lat: place.hint.lat, lon: place.hint.lon, needsLocate: false, located: "district",
-      note: `India Post does not record the exact position of ${place.short}, so the map is centred on the main area of ${place.district}. Drag the pin on the map to the right spot and run again.` });
+    if (place.hint) return Object.assign({}, place, { lat: place.hint.lat, lon: place.hint.lon, needsLocate: false, located: place.hintLocated || "district",
+      note: place.hintNote || `India Post does not record the exact position of ${place.short}, so the map is centred on the main area of ${place.district}. Drag the pin on the map to the right spot and run again.` });
     const err = new Error("Could not find this place on the map"); err.code = "locate_failed"; throw err;
+  }
+  // ---------- India Post positions that look wrong ----------
+  // The public India Post directory files some offices far from where they are: Peelamedu (PIN 641004) 44 km west of
+  // Coimbatore in the hills, Domlur and Richmond Town (Bengaluru) about 100 km away, Asansol's head office 110 km south.
+  // Such an office has no other office with its PIN within 15 km, and either stands almost alone (at most one other
+  // post office within 5 km) or lies far outside the area of its 3-digit PIN group.
+  let PIN_IDX = null, PIN_AREA = null;
+  const MIS = new Map();
+  function pinOffices(pin) {
+    const gz = S.gz; if (!gz) return [];
+    if (!PIN_IDX) {
+      PIN_IDX = new Map();
+      for (let i = 0; i < gz.N; i++) { if (gz.flag[i] !== 2) continue; const arr = PIN_IDX.get(gz.pin[i]); if (arr) arr.push(i); else PIN_IDX.set(gz.pin[i], [i]); }
+    }
+    return PIN_IDX.get(pin) || [];
+  }
+  // middle and reach of a 3-digit PIN group (560xxx = Bengaluru): median position, and 6 x the median distance from it (at least 60 km)
+  function pinArea(pin) {
+    const gz = S.gz; if (!gz) return null;
+    if (!PIN_AREA) {
+      PIN_AREA = new Map();
+      const groups = new Map();
+      for (let i = 0; i < gz.N; i++) { if (gz.flag[i] !== 2) continue; const k = Math.floor(gz.pin[i] / 1000), arr = groups.get(k); if (arr) arr.push(i); else groups.set(k, [i]); }
+      const med = arr => { const s = Float64Array.from(arr).sort(), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+      for (const [k, rows] of groups) {
+        if (rows.length < 8) continue;
+        const lat = med(rows.map(i => gz.lat[i])), lon = med(rows.map(i => gz.lon[i]));
+        PIN_AREA.set(k, { lat, lon, reach: Math.max(60, 6 * med(rows.map(i => E.km(lat, lon, gz.lat[i], gz.lon[i])))) });
+      }
+    }
+    return PIN_AREA.get(Math.floor(pin / 1000)) || null;
+  }
+  function looksMisplaced(i) {
+    const gz = S.gz; if (!gz || i == null || gz.flag[i] !== 2) return false;
+    if (MIS.has(i)) return MIS.get(i);
+    const sib = pinOffices(gz.pin[i]).filter(j => j !== i);
+    let res = false;
+    if (sib.every(j => E.km(gz.lat[i], gz.lon[i], gz.lat[j], gz.lon[j]) > 15)) {
+      const area = pinArea(gz.pin[i]);
+      res = (!!area && E.km(area.lat, area.lon, gz.lat[i], gz.lon[i]) > area.reach)
+        || (sib.length > 0 && E.nearby(gz, gz.lat[i], gz.lon[i], 5, { types: [0, 1, 2] }).length <= 2);
+    }
+    MIS.set(i, res);
+    return res;
+  }
+  // the office at the heart of the other offices sharing a PIN
+  function pinHome(pin, except) {
+    const gz = S.gz, sib = pinOffices(pin).filter(j => j !== except && !looksMisplaced(j));
+    let best = null, bestN = -1;
+    for (const j of sib) {
+      let n = 0;
+      for (const k of sib) if (E.km(gz.lat[j], gz.lon[j], gz.lat[k], gz.lon[k]) <= 8) n++;
+      if (n > bestN || (n === bestN && gz.type[j] < gz.type[best])) { bestN = n; best = j; }
+    }
+    return best;
+  }
+  // centre of a PIN code, leaving out offices whose position looks wrong ({ lost: true } when that leaves none)
+  function pinCentre(pin) {
+    const gz = S.gz, all = pinOffices(pin), ok = all.filter(i => !looksMisplaced(i));
+    if (!ok.length) return all.length ? { lost: true } : null;
+    return { lat: ok.reduce((s, i) => s + gz.lat[i], 0) / ok.length, lon: ok.reduce((s, i) => s + gz.lon[i], 0) / ok.length };
+  }
+  const squash = s => locKey(s).replace(/ /g, "");
+  const consonants = s => s.replace(/[^a-z]/g, "").replace(/(?!^)[aeiouy]/g, "").replace(/(.)\1+/g, "$1");
+  // "Bidhannagar" = "Bidhan Nagar"; with loose matching also "Gandhima Nagar" = "Gandhimaanagar"
+  function sameName(a, b, loose) {
+    const x = squash(a), y = squash(b);
+    if (!x || !y) return false;
+    if (x === y) return true;
+    if (!loose) return false;
+    if (Math.min(x.length, y.length) >= 5 && (x.startsWith(y) || y.startsWith(x))) return true;
+    const cx = consonants(x), cy = consonants(y);
+    return cx.length >= 4 && cx === cy;
+  }
+  const srcName = src => src === "India Post" ? "India Post's" : "OpenStreetMap's";
+  const PLACE_KINDS = /^(city|town|village|hamlet|suburb|quarter|neighbourhood|locality|borough|isolated_dwelling|residential)$/;
+  const needsCheck = p => !!p && !!S.gz && !p.needsLocate && !p.located && !p.checked && p.gi != null && (p.kind === "office" || p.kind === "city") && Number.isFinite(p.lat);
+  const pinNear = (pin, lat, lon, km, except) => E.nearby(S.gz, lat, lon, km, { types: [0, 1, 2] }).some(r => r.i !== except && S.gz.pin[r.i] === pin);
+  // Before a run, look the place up on OpenStreetMap. When the two sources disagree, use the position the evidence supports
+  // (the same PIN on OpenStreetMap, other offices with this PIN around it, India Post's point standing alone) and keep the other one a click away.
+  async function verifyCentre(place, signal) {
+    const gz = S.gz, i = place.gi, pin = gz.pin[i], name = place.short || place.label;
+    const out = Object.assign({}, place, { checked: true });
+    const ip = Number.isFinite(gz.lat[i]) ? { lat: gz.lat[i], lon: gz.lon[i] } : { lat: place.lat, lon: place.lon };   // India Post's point for this office
+    const mis = looksMisplaced(i), home = mis ? pinHome(pin, i) : null;
+    const homePt = home != null ? { lat: gz.lat[home], lon: gz.lon[home] } : null;
+    const area = mis && !homePt ? pinArea(pin) : null;              // no other office with this PIN: use its 3-digit PIN group
+    let results = [];
+    const ctl = new AbortController(), stop = () => ctl.abort(), timer = setTimeout(stop, 8000);
+    signal.addEventListener("abort", stop, { once: true });
+    try { results = (await O.geocode([name, place.district, place.state].filter(Boolean).join(", "), { near: homePt || area || ip, signal: ctl.signal })).results || []; }
+    catch (e) { if (signal.aborted) throw e; }                       // place search down or slow: carry on without it
+    finally { clearTimeout(timer); signal.removeEventListener("abort", stop); }
+    const cands = results.filter(r => sameName(r.title, name, PLACE_KINDS.test(r.kind || "")));
+    const tol = place.kind === "city" ? 10 : 3;
+    if (cands.some(r => E.km(place.lat, place.lon, r.lat, r.lon) <= tol)) return out;   // both sources agree
+    let best = null;
+    for (const r of cands) {
+      const d = E.km(ip.lat, ip.lon, r.lat, r.lon);
+      const plausible = homePt ? E.km(homePt.lat, homePt.lon, r.lat, r.lon) <= 30 : area ? E.km(area.lat, area.lon, r.lat, r.lon) <= area.reach : d <= 80;
+      if (!plausible) continue;                                                                       // a different place with the same name
+      const pc = r.postcode || ((r.sub || "").match(/\bPIN (\d{6})\b/) || [])[1] || "";
+      const nearPin = pinNear(pin, r.lat, r.lon, 4, i);
+      if (pc && +pc !== pin && !nearPin) continue;                                                   // OpenStreetMap gives it another PIN
+      const score = (pc && +pc === pin ? 1 : 0) + (nearPin ? 1 : 0) + (mis ? 1 : 0);
+      if (!best || score > best.score || (score === best.score && d < best.d)) best = { r, d, score, samePin: !!pc && +pc === pin, nearPin };
+    }
+    const kmTo = (a, b) => Math.round(E.km(a.lat, a.lon, b.lat, b.lon));
+    const dirTo = (a, b) => E.compass(E.bearing(a.lat, a.lon, b.lat, b.lon));
+    const was = { lat: place.lat, lon: place.lon }, group = String(pin).slice(0, 3);
+    if (best && best.score > 0) {
+      const at = { lat: best.r.lat, lon: best.r.lon };
+      const misWhy = !mis ? "" : area ? `, ${kmTo(ip, area)} km from the middle of the other ${group}xxx PIN codes` : ", far from every other office with that PIN";
+      const why = mis ? "" : best.samePin && best.nearPin ? ", which has the same PIN and sits among other offices with it" : best.samePin ? ", which OpenStreetMap gives the same PIN" : ", which sits among other offices with this PIN";
+      return Object.assign(out, { lat: at.lat, lon: at.lon, located: "OpenStreetMap", alt: { lat: was.lat, lon: was.lon, src: "India Post" },
+        note: `India Post's directory places ${name} (PIN ${pin}) ${kmTo(at, ip)} km ${dirTo(at, ip)} of where OpenStreetMap shows it${misWhy}. This analysis is centred on the OpenStreetMap position${why}.` });
+    }
+    if (homePt) {
+      return Object.assign(out, { lat: homePt.lat, lon: homePt.lon, located: "PIN " + pin, alt: { lat: was.lat, lon: was.lon, src: "India Post" },
+        note: `India Post's directory places ${name} (PIN ${pin}) more than 15 km from every other office with that PIN, which looks wrong, and the map search did not find it. This analysis is centred on ${gz.names[home]}, which shares PIN ${pin}. Drag the pin on the map to the exact spot and run again.` });
+    }
+    if (mis && area) {
+      const c = E.nearby(gz, area.lat, area.lon, 15, { types: [0, 1] }).find(r => !looksMisplaced(r.i));
+      const at = c ? { lat: gz.lat[c.i], lon: gz.lon[c.i] } : { lat: area.lat, lon: area.lon };
+      return Object.assign(out, { lat: at.lat, lon: at.lon, located: "PIN " + group + "xxx", alt: { lat: was.lat, lon: was.lon, src: "India Post" },
+        note: `India Post's directory places ${name} (PIN ${pin}) ${kmTo(ip, area)} km from the middle of the other ${group}xxx PIN codes, which looks wrong, and the map search did not find it. This analysis is centred on ${c ? gz.names[c.i] : "the middle of that PIN area"}. Drag the pin on the map to the exact spot and run again.` });
+    }
+    if (best && !pinNear(pin, ip.lat, ip.lon, 4, i)) {
+      const at = { lat: best.r.lat, lon: best.r.lon };
+      return Object.assign(out, { alt: { lat: at.lat, lon: at.lon, src: "OpenStreetMap" },
+        note: `OpenStreetMap shows a place called ${best.r.title} ${kmTo(was, at)} km ${dirTo(was, at)} of India Post's position for ${name}. This analysis uses India Post's position (PIN ${pin}); switch if that looks wrong.` });
+    }
+    return out;
+  }
+  // re-run on the other position offered in the banner
+  function useAlt() {
+    const a = S.a, alt = a && a.place.alt; if (!alt) return;
+    const from = { lat: a.place.lat, lon: a.place.lon, src: alt.src === "India Post" ? "OpenStreetMap" : "India Post" };
+    const d = Math.round(E.km(alt.lat, alt.lon, from.lat, from.lon)), dir = E.compass(E.bearing(alt.lat, alt.lon, from.lat, from.lon));
+    const place = { kind: "pin", label: a.place.label, short: a.place.short, lat: alt.lat, lon: alt.lon, district: a.place.district, state: a.place.state, scope: "area",
+      pinCode: a.place.pinCode, located: alt.src + " (chosen)", alt: from,
+      note: `Centred on ${srcName(alt.src)} position for ${a.place.short}, as chosen. ${srcName(from.src)} position is ${d} km ${dir}.` };
+    S.form.place = place; S.form.query = place.short;
+    run(place, a.radiusKm, a.module);
   }
   const CACHE_MS = 24 * 3600 * 1000;
   const LS_CACHE_IDX = "kouzina-area-free-cache";
@@ -3684,13 +3849,19 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
     runOpts = runOpts || {};
     if (S.run) S.run.ctl.abort();
     const ctl = new AbortController();
-    S.run = { ctl, stage: place.needsLocate ? "locate" : "osm", started: Date.now(), server: "", attempt: 1, attempts: 1, place, radiusKm, phase: "query" };
+    S.run = { ctl, stage: place.needsLocate ? "locate" : needsCheck(place) ? "check" : "osm", started: Date.now(), server: "", attempt: 1, attempts: 1, place, radiusKm, phase: "query" };
     lsSet(LS_PREFS, Object.assign(lsGet(LS_PREFS, {}), { module: moduleId }));
     renderForm(); renderMain(); scrollToMain();
     const tick = setInterval(() => { const el = $("#runElapsed"); if (el && S.run) el.textContent = Math.round((Date.now() - S.run.started) / 1000) + "s"; }, 1000);
     const current = () => S.run && S.run.ctl === ctl;
     try {
       if (place.needsLocate) { place = await locate(place, ctl.signal); if (!current()) return; S.run.stage = "osm"; S.run.place = place; renderMain(); }
+      if (needsCheck(place)) {
+        S.run.stage = "check"; renderRunSteps();
+        place = await verifyCentre(place, ctl.signal); if (!current()) return;
+        if (S.form.place && S.form.place.gi === place.gi) S.form.place = place;
+        S.run.stage = "osm"; S.run.place = place; renderMain();
+      }
       const a = newAnalysis(place, radiusKm, moduleId);
       const popP = Pop.inCircle(place.lat, place.lon, radiusKm).catch(() => null);
       S.run.localities = a.localities.length; renderRunSteps();
@@ -3742,7 +3913,8 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
     const a = {
       app: "kouzina-area-analysis", edition: "free", v: 1, id: uid(), createdAt: new Date().toISOString(),
       place: { label: place.label, short: place.short || place.label, district: place.district || "", state: place.state || "", lat: +place.lat.toFixed(5), lon: +place.lon.toFixed(5),
-        kind: place.kind, pinCode: place.pinCode || null, located: place.located || (place.kind === "geo" ? "OpenStreetMap" : place.kind === "pin" ? "coordinates" : "India Post"), note: place.note || "" },
+        kind: place.kind, pinCode: place.pinCode || null, located: place.located || (place.kind === "geo" ? "OpenStreetMap" : place.kind === "pin" ? "coordinates" : "India Post"), note: place.note || "",
+        alt: place.alt ? { lat: +place.alt.lat.toFixed(5), lon: +place.alt.lon.toFixed(5), src: place.alt.src } : null },
       radiusKm, module: moduleId, localities: [], unplaced: [], census: [], gzVersion: S.gz ? S.gz.version : "",
       osm: { ok: false, places: [], roads: [], settlements: [] }
     };
@@ -3752,6 +3924,7 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
       const seen = new Set();
       for (const r of rows) {
         const i = r.i, key = gz.names[i] + "|" + gz.pin[i];
+        if (looksMisplaced(i)) continue;   // India Post's position for this office looks wrong
         if (seen.has(key)) continue; seen.add(key);
         a.localities.push({ name: gz.names[i], pin: gz.pin[i], t: "HSB"[gz.type[i]], la: +gz.lat[i].toFixed(5), lo: +gz.lon[i].toFixed(5), km: +r.km.toFixed(2),
           dir: E.compass(E.bearing(place.lat, place.lon, gz.lat[i], gz.lon[i])) });
@@ -3761,9 +3934,11 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
       if (!a.place.district) { const n = E.nearby(gz, place.lat, place.lon, 10, { types: [0, 1] })[0]; if (n) { const d = gz.districts[gz.dist[n.i]]; a.place.district = d.name; a.place.state = d.state; } }
       // India Post names in the same PIN areas whose position is not recorded
       const pins = new Set(a.localities.map(l => l.pin));
+      if (a.place.pinCode) pins.add(a.place.pinCode);   // the chosen place's own PIN, even when none of its offices is listed
       const known = new Set(a.localities.map(l => l.name));
       for (let i = 0; i < gz.N && a.unplaced.length < 60; i++) {
-        if (gz.flag[i] === 2 || !pins.has(gz.pin[i]) || known.has(gz.names[i])) continue;
+        if (!pins.has(gz.pin[i]) || known.has(gz.names[i])) continue;
+        if (gz.flag[i] === 2 && !looksMisplaced(i)) continue;
         known.add(gz.names[i]); a.unplaced.push({ name: gz.names[i], pin: gz.pin[i] });
       }
     }
@@ -3915,6 +4090,8 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
     const l = a.place.located;
     if (l === "district") return "main area of the district (exact position not recorded by India Post)";
     if (l === "India Post") return "India Post position of " + a.place.short;
+    if (l === "OpenStreetMap" && a.place.alt) return "OpenStreetMap position of " + a.place.short + " (India Post's position differs, see the note at the top)";
+    if (/^PIN \d{3}(\d{3}|xxx)$/.test(l || "")) return "main area of " + l + " (India Post's position for " + a.place.short + " looks wrong)";
     return l || "chosen point";
   }
 
@@ -4065,9 +4242,10 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
   function renderRunSteps() {
     const el = $("#runSteps"); if (!el || !S.run) return;
     const r = S.run, st = r.stage;
+    const first = st === "locate" || st === "check";
     const steps = [
-      [st === "locate" ? "now" : "done", st === "locate" ? "Finding the exact spot on the map" : "Place located"],
-      [st === "locate" ? "" : "done", "India Post localities and PIN codes" + (r.localities != null ? ` · ${fmt(r.localities)} found` : "")],
+      [first ? "now" : "done", st === "locate" ? "Finding the exact spot on the map" : st === "check" ? "Checking the position on OpenStreetMap" : "Place located"],
+      [first ? "" : "done", "India Post localities and PIN codes" + (r.localities != null ? ` · ${fmt(r.localities)} found` : "")],
       [st === "osm" ? "now" : st === "organise" ? "done" : "", "Food outlets, colleges, offices and more from OpenStreetMap" + (st === "osm" ? " · " + osmPhaseText(r) : "")],
       [st === "organise" ? "now" : "", "Organising by locality"]
     ];
@@ -4109,7 +4287,7 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
   }
   function bannerHtml(a) {
     const out = [];
-    if (a.place.note) out.push(`<div class="banner"><strong>Position:</strong> ${esc(a.place.note)}</div>`);
+    if (a.place.note) out.push(`<div class="banner"><strong>Position:</strong> ${esc(a.place.note)}${a.place.alt ? ` <button class="btn small" type="button" data-act="use-alt">Use ${esc(srcName(a.place.alt.src))} position instead</button>` : ""}</div>`);
     if (!a.osm.ok && (a.osm.reason === "file" || (FILE_MODE && a.osm.reason !== "busy"))) out.push(fileModeHtml(true));
     else if (!a.osm.ok && a.osm.reason === "refused") out.push(`<div class="error-box"><strong>Your browser or network blocked the map servers.</strong> India Post localities and Census populations are shown, but food outlets, colleges, offices and other places could not load. This usually comes from a company firewall, VPN or ad-blocker. Try another network (for example your phone's hotspot) or another browser, then <button class="btn small" type="button" data-act="refresh">Try again</button><div class="muted small" style="margin-top:6px">${esc(a.osm.error || "")}</div></div>`);
     else if (!a.osm.ok) out.push(`<div class="error-box"><strong>The live map servers did not answer.</strong> India Post localities and Census populations are shown, but food outlets, colleges, offices and other places are missing. The free servers are sometimes busy; wait a minute and <button class="btn small" type="button" data-act="refresh">Try again</button>${a.radiusKm > 5 ? " or pick a smaller radius." : ""}<div class="muted small" style="margin-top:6px">${esc(a.osm.error || "")}</div></div>`);
@@ -4268,7 +4446,7 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
           ${rows.length > 30 ? `<div class="row-btns" style="margin-top:10px"><button class="btn small" type="button" data-act="all-rows">${S.view.allRows ? "Show fewer" : "Show all " + fmt(rows.length) + " localities"}</button></div>` : ""}`
         : `<p class="empty">No India Post localities with recorded positions in this radius.</p>`}
         ${a.localities.length ? `<p class="hint" style="margin-top:8px">${cols.filter(c => COL_HINT[c] || c === "focus").map(c => `<strong>${esc(label(c))}</strong> = ${esc(c === "focus" ? "food outlets in " + d.mod.short + " categories" : COL_HINT[c])}`).join(" · ")}.</p>` : ""}
-        ${a.unplaced.length ? `<details class="more"><summary>${plural(a.unplaced.length, "more India Post name")} in these PIN codes (position not recorded)</summary><p class="small">${a.unplaced.map(u => esc(u.name) + ' <span class="muted mono">' + esc(u.pin) + "</span>").join(" · ")}</p></details>` : ""}
+        ${a.unplaced.length ? `<details class="more"><summary>${plural(a.unplaced.length, "more India Post name")} in these PIN codes (no reliable position on record)</summary><p class="small">${a.unplaced.map(u => esc(u.name) + ' <span class="muted mono">' + esc(u.pin) + "</span>").join(" · ")}</p></details>` : ""}
       </div>`;
   }
   function localityDetailHtml(a, d, k) {
@@ -4433,6 +4611,7 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
     const L = [];
     L.push(`Area details: ${a.place.short}${a.place.district ? ", " + a.place.district : ""}${a.place.state ? ", " + a.place.state : ""} — ${a.radiusKm} km radius`);
     L.push(`Centre ${a.place.lat.toFixed(5)}, ${a.place.lon.toFixed(5)} · ${E.mapsLink(a.place.lat, a.place.lon)}`);
+    if (a.place.note) L.push(`Position: ${a.place.note}`);
     if (a.pop && !a.pop.na) L.push(`Population in this area: about ${popText(a.pop.total)} (WorldPop ${a.pop.year} estimate, ${a.radiusKm} km radius)${city ? ` · ${city.name} city ${fmt(city.pop)} (Census 2011)` : ""}`);
     else if (city) L.push(`Population: ${city.name} ${fmt(city.pop)} (Census 2011)`);
     L.push(`Localities: ${a.localities.length} (PIN codes ${[...new Set(a.localities.filter(l => l.pin && !l.pinApprox).map(l => l.pin))].slice(0, 14).join(", ")})`);
@@ -4535,6 +4714,7 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
       else if (act === "copy") copyText(summaryText(), "Summary copied.");
       else if (act === "save") saveFile();
       else if (act === "refresh") { const a = S.a; run(Object.assign({ kind: a.place.kind === "geo" ? "geo" : "pin", scope: "area" }, a.place, { needsLocate: false }), a.radiusKm, S.form.module || a.module, { fresh: true }); }
+      else if (act === "use-alt") useAlt();
       else if (act === "rerun-here") {
         if (!S.moved) return; const a = S.a, ll = S.moved; S.moved = null;
         const near = S.gz ? E.nearby(S.gz, ll.lat, ll.lng, 6, { types: [0, 1] })[0] : null;
@@ -4581,7 +4761,7 @@ window.KzCensus = {"source":"Census of India 2011, cities of 1 lakh and above (p
     runFromForm();
   }
 
-  window.KzApp = { state: S, run, derive, summaryText };
+  window.KzApp = { state: S, run, derive, summaryText, checks: { looksMisplaced, pinHome, pinCentre, sameName, verifyCentre } };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
 })();
 
